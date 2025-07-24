@@ -17,10 +17,33 @@ minetest.register_node(modprefix .. "segment", {
     paramtype2 = "facedir",
 })
 
--- Position du drone contrôlé par chaque joueur
+-- Stockage des positions centrales pour chaque joueur
 local drone_formspec_positions = {}
 
+------------------------------------------------------------
+-- Génère les positions d'un rectangle 3×5
+------------------------------------------------------------
+local function get_drone_positions(center_pos, param2)
+    -- Directions
+    local forward = minetest.facedir_to_dir(param2)
+    local right = {x = forward.z, y = 0, z = -forward.x} -- rotation 90° à droite
+    local positions = {}
+
+    -- Le centre (bloc "blackdrone") est à la rangée 3, colonne 2
+    -- On génère une matrice de -2 à +2 (avant/arrière) et -1 à +1 (gauche/droite)
+    for dz = -2, 2 do -- avant/arrière
+        for dx = -1, 1 do -- gauche/droite
+            local pos = vector.add(center_pos, vector.add(vector.multiply(forward, dz), vector.multiply(right, dx)))
+            table.insert(positions, {pos = pos, is_center = (dz == 0 and dx == 0)})
+        end
+    end
+
+    return positions
+end
+
+------------------------------------------------------------
 -- Tête du drone
+------------------------------------------------------------
 minetest.register_node(modprefix .. "blackdrone", {
     description = "Drone",
     tiles = {"drone.png"},
@@ -28,17 +51,17 @@ minetest.register_node(modprefix .. "blackdrone", {
     paramtype = "light",
     paramtype2 = "facedir",
 
+    -- Quand on place le bloc central
     on_construct = function(pos)
         local node = minetest.get_node(pos)
         if not node.param2 then node.param2 = 0 end
         minetest.swap_node(pos, node)
 
-        -- Place les segments derrière
-        local dir = minetest.facedir_to_dir(node.param2)
-        for i = 1, 3 do
-            local seg_pos = vector.subtract(pos, vector.multiply(dir, i))
-            if minetest.get_node(seg_pos).name == "air" then
-                minetest.set_node(seg_pos, {name = modprefix .. "segment", param2 = node.param2})
+        -- Place automatiquement le rectangle 3×5
+        local positions = get_drone_positions(pos, node.param2)
+        for _, p in ipairs(positions) do
+            if not p.is_center and minetest.get_node(p.pos).name == "air" then
+                minetest.set_node(p.pos, {name = modprefix .. "segment", param2 = node.param2})
             end
         end
     end,
@@ -70,24 +93,26 @@ minetest.register_node(modprefix .. "blackdrone", {
 local function nextrangeright(x) return (x + 1) % 4 end
 local function nextrangeleft(x) return (x + 3) % 4 end
 
--- Traitement de la télécommande
+------------------------------------------------------------
+-- Déplacement et rotation du drone 3×5
+------------------------------------------------------------
 minetest.register_on_player_receive_fields(function(player, formname, fields)
     if formname ~= modprefix .. "control_formspec" then return end
 
     local player_name = player:get_player_name()
-    local head_pos = drone_formspec_positions[player_name]
-    if not head_pos then return end
+    local center_pos = drone_formspec_positions[player_name]
+    if not center_pos then return end
 
-    local head_node = minetest.get_node(head_pos)
+    local head_node = minetest.get_node(center_pos)
     if head_node.name ~= modprefix .. "blackdrone" then
         drone_formspec_positions[player_name] = nil
         return
     end
 
     local param2 = head_node.param2 or 0
-    local dir = minetest.facedir_to_dir(param2)
+    local forward = minetest.facedir_to_dir(param2)
 
-    -- Rotation
+    -- === ROTATION ===
     if fields.turnright or fields.turnleft then
         local rotationPart = param2 % 32
         local preservePart = param2 - rotationPart
@@ -97,60 +122,63 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
         local new_param2 = preservePart + axisdir * 4 + new_rotation
         head_node.param2 = new_param2
 
-        -- Supprimer anciens segments
-        for i = 1, 3 do
-            local seg_pos = vector.subtract(head_pos, vector.multiply(dir, i))
-            minetest.remove_node(seg_pos)
+        -- Supprimer l'ancien rectangle
+        local old_positions = get_drone_positions(center_pos, param2)
+        for _, p in ipairs(old_positions) do
+            if not p.is_center then
+                minetest.remove_node(p.pos)
+            end
         end
 
-        minetest.swap_node(head_pos, head_node)
+        -- Replacer la tête
+        minetest.swap_node(center_pos, head_node)
 
-        -- Placer les segments dans la nouvelle direction
-        dir = minetest.facedir_to_dir(new_param2)
-        for i = 1, 3 do
-            local seg_pos = vector.subtract(head_pos, vector.multiply(dir, i))
-            minetest.set_node(seg_pos, {name = modprefix .. "segment", param2 = new_param2})
+        -- Générer le rectangle dans la nouvelle direction
+        local new_positions = get_drone_positions(center_pos, new_param2)
+        for _, p in ipairs(new_positions) do
+            if not p.is_center then
+                minetest.set_node(p.pos, {name = modprefix .. "segment", param2 = new_param2})
+            end
         end
 
         minetest.sound_play("moveokay", {to_player = player_name, gain = 1.0})
         return
     end
 
-    -- Déplacement
+    -- === DÉPLACEMENT ===
     local offset = {x=0, y=0, z=0}
     if fields.up then offset.y = 1 end
     if fields.down then offset.y = -1 end
-    if fields.forward then offset = vector.multiply(dir, -1) end
-    if fields.backward then offset = vector.multiply(dir, 1) end
+    if fields.forward then offset = forward end
+    if fields.backward then offset = vector.multiply(forward, -1) end
 
     if vector.equals(offset, {x=0, y=0, z=0}) then return end
 
-    -- Vérification de toutes les nouvelles positions
-    local future_positions = {}
-    for i = 0, 3 do
-        local old_pos = vector.subtract(head_pos, vector.multiply(dir, i))
-        local new_pos = vector.add(old_pos, offset)
+    -- Vérifier que toutes les nouvelles positions sont libres
+    local current_positions = get_drone_positions(center_pos, param2)
+    for _, p in ipairs(current_positions) do
+        local new_pos = vector.add(p.pos, offset)
         local check_node = minetest.get_node(new_pos)
-        --if minetest.registered_nodes[check_node.name].walkable then
-        --   minetest.sound_play("moveerror", {to_player = player_name, gain = 1.0})
-        --    minetest.chat_send_player(player_name, "Direction actuelle: x="..dir.x.." z="..dir.z)
-        --   return
+        --if minetest.registered_nodes[check_node.name].walkable and check_node.name ~= modprefix.."segment" then
+        --    minetest.sound_play("moveerror", {to_player = player_name, gain = 1.0})
+        --    return
         --end
-        table.insert(future_positions, {old = old_pos, new = new_pos})
     end
 
-    -- Supprimer les anciens
-    for _, p in ipairs(future_positions) do
-        minetest.remove_node(p.old)
+    -- Supprimer tous les anciens blocs
+    for _, p in ipairs(current_positions) do
+        minetest.remove_node(p.pos)
     end
 
-    -- Placer les nouveaux
-    for i, p in ipairs(future_positions) do
-        local name = (i == 1) and modprefix .. "blackdrone" or modprefix .. "segment"
-        minetest.set_node(p.new, {name = name, param2 = param2})
+    -- Replacer le drone déplacé
+    local new_center = vector.add(center_pos, offset)
+    local new_positions = get_drone_positions(new_center, param2)
+    for _, p in ipairs(new_positions) do
+        local name = p.is_center and modprefix .. "blackdrone" or modprefix .. "segment"
+        minetest.set_node(p.pos, {name = name, param2 = param2})
     end
 
-    drone_formspec_positions[player_name] = future_positions[1].new
+    drone_formspec_positions[player_name] = new_center
     minetest.sound_play("moveokay", {to_player = player_name, gain = 1.0})
 end)
 
