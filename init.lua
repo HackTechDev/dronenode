@@ -26,20 +26,26 @@ local drone_formspec_positions = {}
 local function get_drone_positions(center_pos, param2)
     -- Directions
     local forward = minetest.facedir_to_dir(param2)
-    local right = {x = forward.z, y = 0, z = -forward.x} -- rotation 90° à droite
+    local right = {x = forward.z, y = 0, z = -forward.x} -- 90° à droite
+
     local positions = {}
 
-    -- Le centre (bloc "blackdrone") est à la rangée 3, colonne 2
-    -- On génère une matrice de -2 à +2 (avant/arrière) et -1 à +1 (gauche/droite)
-    for dz = -2, 2 do -- avant/arrière
-        for dx = -1, 1 do -- gauche/droite
-            local pos = vector.add(center_pos, vector.add(vector.multiply(forward, dz), vector.multiply(right, dx)))
-            table.insert(positions, {pos = pos, is_center = (dz == 0 and dx == 0)})
+    -- Nouveau layout : bloc central tout en haut (rangée 0), au milieu (colonne 0)
+    -- Itérer de dz = 0 à 4 (5 lignes, avant -> arrière)
+    -- et de dx = -1 à 1 (gauche -> droite)
+    for dz = 0, 4 do
+        for dx = -1, 1 do
+            local pos = vector.add(center_pos,
+                vector.add(vector.multiply(forward, dz),
+                           vector.multiply(right, dx)))
+            local is_center = (dz == 0 and dx == 0) -- D est tout en haut au centre
+            table.insert(positions, {pos = pos, is_center = is_center})
         end
     end
 
     return positions
 end
+
 
 ------------------------------------------------------------
 -- Tête du drone
