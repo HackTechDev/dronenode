@@ -155,8 +155,8 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
     local offset = {x=0, y=0, z=0}
     if fields.up then offset.y = 1 end
     if fields.down then offset.y = -1 end
-    if fields.forward then offset = forward end
-    if fields.backward then offset = vector.multiply(forward, -1) end
+    if fields.forward then offset = vector.multiply(forward, -1) end
+    if fields.backward then offset = forward end
 
     if vector.equals(offset, {x=0, y=0, z=0}) then return end
 
